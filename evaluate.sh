@@ -30,7 +30,7 @@ LOG['multi']="$OUTPUT_DIR/multi.csv"
 LOG['multiInterpolatedHalf']="$OUTPUT_DIR/multiInterpolatedHalf.csv"
 LOG['multiInterpolatedFull']="$OUTPUT_DIR/multiInterpolatedFull.csv"
 
-HEADER="scene, quality, compression, codecQuality, SSIM, PSNR, VMAF, encode time, decode time, size"
+HEADER="scene, quality, compression, SSIM, PSNR, VMAF, FSIM, NAT_DISTS, encode time, decode time, size"
 for KEY in "${!LOG[@]}"; do
     >${LOG[$KEY]}
     echo $HEADER >> ${LOG[$KEY]}
@@ -41,7 +41,7 @@ TEMP=$(mktemp -d)
 
 codecQuality() 
 {
-    local Q=$(echo $1*$2 | bc)
+    local Q=$(echo "scale=5; $1*$2" | bc)
     echo $Q
 }
 
@@ -87,7 +87,7 @@ encode()
 
     if [ $METHOD == "jxl" ]; then 
         local PATTERN=$(filePattern "$INPUT")
-        local INPUT_FILE="$INPUT/reference.apng"
+        local INPUT_FILE="$TEMP/reference.apng"
         local OUTPUT_FILE="$OUTPUT/encoded.jxl"
         "$FFMPEG" -y -i "$PATTERN" "$INPUT_FILE"
         local MAX_Q=100 
@@ -138,10 +138,10 @@ evaluate()
 
     clearDirs "$ENCODED" "$DECODED" "$REFERENCE"
     cp "$SCENE/${FILES[$CENTER]}" "$REFERENCE/0001.$EXT"
-    ENCODE_TIME=$(encode $METHOD "$REFERENCE" $QUALITY "$ENCODED")
-    DECODE_TIME=$(decode $METHOD "$ENCODED" "$DECODED")
-    SIZE=$(size "$ENCODED")
-    METRICS=$(quality "$REFERENCE" "$DECODED")
+    local ENCODE_TIME=$(encode $METHOD "$REFERENCE" $QUALITY "$ENCODED")
+    local DECODE_TIME=$(decode $METHOD "$ENCODED" "$DECODED")
+    local SIZE=$(size "$ENCODED")
+    local METRICS=$(quality "$REFERENCE" "$DECODED")
     echo $SCENE, $QUALITY, $METHOD, $METRICS, $ENCODE_TIME, $DECODE_TIME, $SIZE >> ${LOG['single']} 
 }
 
@@ -150,7 +150,7 @@ measure()
     local SCENE=$1
     local METHODS=("jxl")
     for METHOD in "${METHODS[@]}"; do
-        for QUALITY in $(seq 0.0 0.1 1); do
+        for QUALITY in $(seq 0.0 0.1 0.1); do
             evaluate $METHOD "$SCENE" $QUALITY
         done
     done
