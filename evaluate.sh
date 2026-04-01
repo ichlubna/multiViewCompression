@@ -130,19 +130,40 @@ evaluate()
     local QUALITY=$3
     local COUNT=$(ls "$SCENE" -1 | wc -l)
     local CENTER=$(($COUNT / 2))
-    local FILES=($(ls "$SCENE" | sort))
-    EXT="${FILES[0]##*.}"
+    local FILES=($(printf "%s\n" "$SCENE"/* | sort))
     local REFERENCE="$TEMP/reference"
     local ENCODED="$TEMP/encoded"
     local DECODED="$TEMP/decoded"
 
-    clearDirs "$ENCODED" "$DECODED" "$REFERENCE"
-    cp "$SCENE/${FILES[$CENTER]}" "$REFERENCE/0001.$EXT"
-    local ENCODE_TIME=$(encode $METHOD "$REFERENCE" $QUALITY "$ENCODED")
-    local DECODE_TIME=$(decode $METHOD "$ENCODED" "$DECODED")
-    local SIZE=$(size "$ENCODED")
-    local METRICS=$(quality "$REFERENCE" "$DECODED")
-    echo $SCENE, $QUALITY, $METHOD, $METRICS, $ENCODE_TIME, $DECODE_TIME, $SIZE >> ${LOG['single']} 
+    declare -A REF_FILES
+    local ARR=("${FILES[$CENTER]}")
+    REF_FILES['single']=$(printf "%q " "${ARR[@]}")
+    local ARR=("${FILES[0]}" "${FILES[1]}")
+    REF_FILES['stereoClose']=$(printf "%q " "${ARR[@]}")
+    local ARR=("${FILES[0]}" "${FILES[$(($COUNT - 1))]}")
+    REF_FILES['stereoFar']=$(printf "%q " "${ARR[@]}")
+    REF_FILES['multi']=$(printf "%q " "${FILES[@]}")
+    local ARR="$SCENE/${FILES[$CENTER]}"
+    REF_FILES['multiInterpolatedHalf']=$(printf "%q " "${ARR[@]}")
+    local ARR="$SCENE/${FILES[$CENTER]}"
+    REF_FILES['multiInterpolatedFull']=$(printf "%q " "${ARR[@]}")
+
+    I=1
+    for KEY in single multi; do #single stereoClose stereoFar multi; do # multiInterpolatedHalf multiInterpolatedFull; do
+        clearDirs "$ENCODED" "$DECODED" "$REFERENCE"
+        eval "CURRENT_FILES=(${REF_FILES[$KEY]})"
+        for FILE in "${CURRENT_FILES[@]}"; do
+            EXT="${FILE##*.}"
+            printf -v NEWNAME "%04d.%s" "$I" "$EXT"
+            cp "$FILE" "$REFERENCE/$NEWNAME"
+            ((I++))
+        done
+        local ENCODE_TIME=$(encode $METHOD "$REFERENCE" $QUALITY "$ENCODED")
+        local DECODE_TIME=$(decode $METHOD "$ENCODED" "$DECODED")
+        local SIZE=$(size "$ENCODED")
+        local METRICS=$(quality "$REFERENCE" "$DECODED")
+        echo $SCENE, $QUALITY, $METHOD, $METRICS, $ENCODE_TIME, $DECODE_TIME, $SIZE >> ${LOG["$KEY"]} 
+    done
 }
 
 measure()
@@ -150,7 +171,7 @@ measure()
     local SCENE=$1
     local METHODS=("jxl")
     for METHOD in "${METHODS[@]}"; do
-        for QUALITY in $(seq 0.0 0.1 0.1); do
+        for QUALITY in $(seq 0.0 0.1 0.05); do
             evaluate $METHOD "$SCENE" $QUALITY
         done
     done
