@@ -14,6 +14,11 @@ FFMPEG=ffmpeg
 JXL_ENCODER=cjxl
 JXL_DECODER=djxl
 # Paths
+# https://github.com/bbldcver/EDEN
+# Conda setup needs to be prepared for the following tools according to each repository README 
+EDEN=EDEN
+# https://github.com/KAIST-VICLab/BiM-VFI
+BIMVFI=BIMVFI
 
 set -ex
 
@@ -123,38 +128,147 @@ clearDirs()
     mkdir -p "$@" 
 }
 
+fileName()
+{
+    local ORIG_FILE=$1
+    local NUMBER=$2
+    local EXT="${ORIG_FILE##*.}"
+    printf -v NEWNAME "%04d.%s" "$NUMBER" "$EXT"
+    echo $NEWNAME
+}
+
+fileToNumber()
+{
+    local FILE=$1
+    local FILENAME=$(basename "$FILE")
+    local NO_EXT="${FILENAME%.*}"
+    local NUMBER=$((10#$NO_EXT))
+    echo $NUMBER
+}
+
+interpolate()
+{
+    local -n IN_FILES=$1
+    local INTERPOLATED_DIR_HALF=$2
+    local INTERPOLATED_DIR_FULL=$3
+    local METHOD=$4
+    local COUNT=${#FILES[@]}
+   
+    local FINISHED=0 
+    local LAST_ID=$(($COUNT - 1))
+    clearDirs "$INTERPOLATED_DIR_HALF" "$INTERPOLATED_DIR_FULL"
+    if (( COUNT % 2 == 0 )); then
+        local LAST_FILE=$(fileName "${IN_FILES[$LAST_ID]}" $(($LAST_ID+1)))
+        cp "${IN_FILES[$LAST_ID]}" "$INTERPOLATED_DIR_HALF/$LAST_FILE" 
+        cp "${IN_FILES[$LAST_ID]}" "$INTERPOLATED_DIR_FULL/$LAST_FILE" 
+        local LAST_ID=$(($LAST_ID - 1))
+        local FINISHED=1
+    fi
+   
+    local LAST_FILE=$(fileName "${IN_FILES[$LAST_ID]}" $(($LAST_ID+1)))
+    cp "${IN_FILES[$LAST_ID]}" "$INTERPOLATED_DIR_HALF/$LAST_FILE" 
+    cp "${IN_FILES[$LAST_ID]}" "$INTERPOLATED_DIR_FULL/$LAST_FILE" 
+    local FIRST_FILE=$(fileName "${FILES[0]}" 1)
+    cp "${IN_FILES[0]}" "$INTERPOLATED_DIR_HALF/$FIRST_FILE" 
+    cp "${IN_FILES[0]}" "$INTERPOLATED_DIR_FULL/$FIRST_FILE" 
+  
+    local RESULT_DIR=$TEMP/interpolated
+    mkdir -p $RESULT_DIR 
+    local PAIRS=("$INTERPOLATED_DIR_FULL/$FIRST_FILE $INTERPOLATED_DIR_FULL/$LAST_FILE")
+    local FINISHED=$(($FINISHED + 2))
+    while (( FINISHED < $COUNT )); do
+        local NEW_PAIRS=()
+        for PAIR in "${PAIRS[@]}"; do
+            read -r FIRST SECOND <<< "$PAIR"
+            local FIRST_ID=$( fileToNumber "$FIRST")
+            local SECOND_ID=$( fileToNumber "$SECOND")
+            local NEW_ID=$((($FIRST_ID + $SECOND_ID) / 2))
+
+            if [ $METHOD == "eden" ]; then 
+                cd $EDEN
+                conda run -n eden CUDA_VISIBLE_DEVICES=0 python inference.py --frame_0_path $FIRST --frame_1_path $SECOND --interpolated_results_dir $RESULT_DIR 
+                local NEW=$(fileName "$RESULT_DIR/interpolated.png" $NEW_ID)
+                cp "$RESULT_DIR/interpolated.png" $INTERPOLATED_DIR_FULL/$NEW
+                cd - > /dev/null
+            else
+                local INTER_INPUT_PATH="$TMP/interpolateInput"
+                sed -i "s|root_path: ./assets/demo|root_path: $INTER_INPUT_PATH|" cfgs/bim_vfi_demo.yaml
+                #TODO extract the frames
+                conda run -n bimvfi python main.py --cfg cfgs/bim_vfi_demo.yaml
+            fi 
+
+            local NEW_PAIRS+=("$FIRST $INTERPOLATED_DIR_FULL/$NEW")
+            local NEW_PAIRS+=("$INTERPOLATED_DIR_FULL/$NEW $SECOND")
+            local FINISHED=$(($FINISHED + 1))
+        done
+        PAIRS=("${NEW_PAIRS[@]}")
+    done   
+    
+    for ((I = 2; I <= $LAST_ID; I += 2)); do
+        local FIRST=${IN_FILES[$(($I - 2))]}
+        local SECOND=${IN_FILES[$(($I))]}
+        local FIRST_ID=$(fileToNumber "$FIRST")
+        local SECOND_ID=$(fileToNumber "$SECOND")
+        local NEW_FIRST=$(fileName "$FIRST" $FIRST_ID)
+        local NEW_SECOND=$(fileName "$SECOND" $SECOND_ID)
+        cp "$FIRST" "$INTERPOLATED_DIR_HALF/$NEW_FIRST"
+        cp "$SECOND" "$INTERPOLATED_DIR_HALF/$NEW_SECOND"
+        cd $EDEN
+        conda run -n eden CUDA_VISIBLE_DEVICES=0 python inference.py --frame_0_path $FIRST --frame_1_path $SECOND --interpolated_results_dir $RESULT_DIR 
+        local NEW_INTER=$(fileName "$RESULT_DIR/interpolated.png" $(($FIRST_ID + 1)))
+        cp "$RESULT_DIR/interpolated.png" $INTERPOLATED_DIR_HALF/$NEW_INTER
+        cd - > /dev/null 
+    done 
+ 
+exit 1 
+}
+
 evaluate()
 {
     local METHOD=$1
-    local SCENE=$2
+    local INPUT_SCENE=$2
     local QUALITY=$3
+
+    local SCENE="$TEMP/scene"
+    clearDirs "$SCENE"
+    local PATTERN=$(filePattern "$INPUT_SCENE")
+    $FFMPEG -y -i "$PATTERN" "$SCENE/%04d.png"
+
     local COUNT=$(ls "$SCENE" -1 | wc -l)
     local CENTER=$(($COUNT / 2))
     local FILES=($(printf "%s\n" "$SCENE"/* | sort))
     local REFERENCE="$TEMP/reference"
     local ENCODED="$TEMP/encoded"
-    local DECODED="$TEMP/decoded"
+    local DECODED="$TEMP/decoded"   
 
-    declare -A REF_FILES
+    local -A REF_FILES
     local ARR=("${FILES[$CENTER]}")
-    REF_FILES['single']=$(printf "%q " "${ARR[@]}")
+    local REF_FILES['single']=$(printf "%q " "${ARR[@]}")
     local ARR=("${FILES[0]}" "${FILES[1]}")
-    REF_FILES['stereoClose']=$(printf "%q " "${ARR[@]}")
+    local REF_FILES['stereoClose']=$(printf "%q " "${ARR[@]}")
     local ARR=("${FILES[0]}" "${FILES[$(($COUNT - 1))]}")
-    REF_FILES['stereoFar']=$(printf "%q " "${ARR[@]}")
-    REF_FILES['multi']=$(printf "%q " "${FILES[@]}")
+    local REF_FILES['stereoFar']=$(printf "%q " "${ARR[@]}")
+    local REF_FILES['multi']=$(printf "%q " "${FILES[@]}")
     local ARR="$SCENE/${FILES[$CENTER]}"
+
+    local INTERPOLATED_HALF_EDEN="$TEMP/interpolatedHalfEden"
+    local INTERPOLATED_FULL_EDEN="$TEMP/interpolatedFullEden"
+    local INTERPOLATED_HALF_PERVFI="$TEMP/interpolatedHalfPerVFI"
+    local INTERPOLATED_FULL_PERVFI="$TEMP/interpolatedFullPerVFI"
+    interpolate FILES "$INTERPOLATED_HALF_EDEN" "$INTERPOLATED_FULL_EDEN" "eden"
+    interpolate FILES "$INTERPOLATED_HALF_PERVFI" "$INTERPOLATED_FULL_PERVFI" "pervfi"
+    exit 1
+    
     REF_FILES['multiInterpolatedHalf']=$(printf "%q " "${ARR[@]}")
     local ARR="$SCENE/${FILES[$CENTER]}"
     REF_FILES['multiInterpolatedFull']=$(printf "%q " "${ARR[@]}")
 
-    I=1
-    for KEY in single multi; do #single stereoClose stereoFar multi; do # multiInterpolatedHalf multiInterpolatedFull; do
+    for KEY in single stereoClose stereoFar multi; do # multiInterpolatedHalf multiInterpolatedFull; do
         clearDirs "$ENCODED" "$DECODED" "$REFERENCE"
         eval "CURRENT_FILES=(${REF_FILES[$KEY]})"
+        I=1
         for FILE in "${CURRENT_FILES[@]}"; do
-            EXT="${FILE##*.}"
-            printf -v NEWNAME "%04d.%s" "$I" "$EXT"
+            local NEWNAME=$(fileName "$FILE" $I)
             cp "$FILE" "$REFERENCE/$NEWNAME"
             ((I++))
         done

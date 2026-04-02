@@ -73,7 +73,6 @@ HEIGHT=$($FFPROBE -v error -select_streams v:0 -show_entries stream=height -of c
 if [[ $WIDTH > $HEIGHT ]]; then
     LKG=$LKG_LANDSCAPE
 fi
-ls $DISTORTED_FRAMES 
 ./QuiltToNative -i $DISTORTED_FRAMES -o $QUILT_DIST -cols $FRAMES_COUNT -rows 1 -focus 0 $LKG
 ./QuiltToNative -i $REFERENCE_FRAMES -o $QUILT_REF -cols $FRAMES_COUNT -rows 1 -focus 0 $LKG
 cd - > /dev/null 
