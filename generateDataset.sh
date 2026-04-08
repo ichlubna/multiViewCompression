@@ -76,9 +76,6 @@ mkdir results
 COUNTER=1
 
 files=()
-declare -A configurations
-declare -A resolutions
-declare -A aggregated
 
 for file in tmp/*; do
     echo "${COUNTER}. Processing ${file}"
@@ -116,25 +113,6 @@ for file in tmp/*; do
         TILE_W=$((WIDTH / COLS))
         TILE_H=$((HEIGHT / ROWS))
 
-        # Statistics
-        key=$((COLS*ROWS))
-        if [ -z "${configurations[$key]}" ]; then
-            configurations[$key]=0
-        fi
-        configurations[$key]=$((configurations[$key] + 1))
-
-        key="$TILE_W:$TILE_H"
-        if [ -z "${resolutions[$key]}" ]; then
-            resolutions[$key]=0
-        fi
-        resolutions[$key]=$((resolutions[$key] + 1))
-
-        key="$TILE_W:$TILE_H:$((COLS*ROWS))"
-        if [ -z "${aggregated[$key]}" ]; then
-            aggregated[$key]=0
-        fi
-        aggregated[$key]=$((aggregated[$key] + 1))
-
         index=1
 
         for ((row=ROWS-1; row>=0; row--)); do  # bottom → top
@@ -162,23 +140,4 @@ for file in tmp/*; do
         echo "Processed ${file} and added to files."
     fi
     COUNTER=$((COUNTER+1))
-done
-
-# Print statistics to CSV
-CSV_OUT="results/stats-configurations.csv"
-echo "views,occurence" > $CSV_OUT
-for key in "${!configurations[@]}"; do
-    echo "$key,${configurations[$key]}" >> $CSV_OUT
-done
-
-CSV_OUT="results/stats-resolutions.csv"
-echo "resolution,occurence" > $CSV_OUT
-for key in "${!resolutions[@]}"; do
-    echo "$key,${resolutions[$key]}" >> $CSV_OUT
-done
-
-CSV_OUT="results/stats-aggregated.csv"
-echo "aggregated,occurence" > $CSV_OUT
-for key in "${!aggregated[@]}"; do
-    echo "$key,${aggregated[$key]}" >> $CSV_OUT
 done
