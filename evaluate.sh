@@ -40,6 +40,11 @@ for KEY in "${!LOG[@]}"; do
     >${LOG[$KEY]}
     echo $HEADER >> ${LOG[$KEY]}
 done
+HEADER="scene, quality, compression, SSIM, PSNR, VMAF, FSIM, NAT_DISTS, interpolation time, interpolation method, size"
+>${LOG['multiInterpolatedHalf']}
+echo $HEADER >> ${LOG['multiInterpolatedHalf']}
+>${LOG['multiInterpolatedFull']}
+echo $HEADER >> ${LOG['multiInterpolatedFull']}
 
 SCENES=($(ls "$INPUT_DIR" | sort))
 TEMP=$(mktemp -d)
@@ -124,8 +129,10 @@ decode()
 
 clearDirs()
 {
-    rm -rf "$@"
-    mkdir -p "$@" 
+    for DIR in "$@"; do
+        mkdir -p "$DIR"
+        rm -f "$DIR"/*
+    done
 }
 
 fileName()
@@ -146,13 +153,58 @@ fileToNumber()
     echo $NUMBER
 }
 
+interpolateFrames()
+{
+    local FIRST=$1
+    local SECOND=$2
+    local OUTPUT=$3
+    local METHOD=$4
+
+    local RESULT_DIR=$TEMP/interpolated
+    mkdir -p $RESULT_DIR 
+
+    cd $BIMVFI
+    local INTER_INPUT_PATH="$TEMP/interpolateInput"
+    local INTER_INPUT_PATH_SCENE="$TEMP/interpolateInput/scene"
+    mkdir -p $INTER_INPUT_PATH
+    clearDirs "$INTER_INPUT_PATH_SCENE" 
+    sed -i "s|^\(\s*root_path:\s*\).*|\1$INTER_INPUT_PATH|" cfgs/bim_vfi_demo.yaml
+    sed -i "s|inference_demo(self.model, 8, video_path, out_path)|inference_demo(self.model, 2, video_path, out_path)|" modules/models/base_model.py
+    cd - > /dev/null
+
+    if [ $METHOD == "eden" ]; then 
+        cd $EDEN
+        local START=$(now)
+        conda run -n eden CUDA_VISIBLE_DEVICES=0 python inference.py --frame_0_path $FIRST --frame_1_path $SECOND --interpolated_results_dir $RESULT_DIR &> /dev/null 
+        local END=$(now)
+        cp "$RESULT_DIR/interpolated.png" $OUTPUT
+        cd - > /dev/null
+    else
+        cp $FIRST $INTER_INPUT_PATH_SCENE
+        cp $SECOND $INTER_INPUT_PATH_SCENE
+        cd $BIMVFI
+        local START=$(now)
+        conda run -n bimvfi python main.py --cfg cfgs/bim_vfi_demo.yaml &> /dev/null
+        cp "save/bim_vfi_original/output/demo/scene/0000001.jpg" $OUTPUT
+        local END=$(now)
+        cd - > /dev/null
+    fi
+    echo $(elapsed $START $END)
+}
+
 interpolate()
 {
-    local -n IN_FILES=$1
+    local INPUT=$1
     local INTERPOLATED_DIR_HALF=$2
     local INTERPOLATED_DIR_FULL=$3
     local METHOD=$4
-    local COUNT=${#FILES[@]}
+
+    local PATTERN=$(filePattern "$INPUT")
+    local IN_DIR="$TEMP/toInterpolate"
+    clearDirs "$IN_DIR"
+    $FFMPEG -i "$PATTERN" "$IN_DIR/%04d.png"
+    mapfile -t IN_FILES < <(find "$IN_DIR" -maxdepth 1 -type f | sort) 
+    local COUNT=${#IN_FILES[@]}
    
     local FINISHED=0 
     local LAST_ID=$(($COUNT - 1))
@@ -168,14 +220,14 @@ interpolate()
     local LAST_FILE=$(fileName "${IN_FILES[$LAST_ID]}" $(($LAST_ID+1)))
     cp "${IN_FILES[$LAST_ID]}" "$INTERPOLATED_DIR_HALF/$LAST_FILE" 
     cp "${IN_FILES[$LAST_ID]}" "$INTERPOLATED_DIR_FULL/$LAST_FILE" 
-    local FIRST_FILE=$(fileName "${FILES[0]}" 1)
+    local FIRST_FILE=$(fileName "${IN_FILES[0]}" 1)
     cp "${IN_FILES[0]}" "$INTERPOLATED_DIR_HALF/$FIRST_FILE" 
     cp "${IN_FILES[0]}" "$INTERPOLATED_DIR_FULL/$FIRST_FILE" 
   
-    local RESULT_DIR=$TEMP/interpolated
-    mkdir -p $RESULT_DIR 
     local PAIRS=("$INTERPOLATED_DIR_FULL/$FIRST_FILE $INTERPOLATED_DIR_FULL/$LAST_FILE")
     local FINISHED=$(($FINISHED + 2))
+    local TOTAL_TIME=0
+    local INTERPOLATED_COUNT=0
     while (( FINISHED < $COUNT )); do
         local NEW_PAIRS=()
         for PAIR in "${PAIRS[@]}"; do
@@ -183,25 +235,17 @@ interpolate()
             local FIRST_ID=$( fileToNumber "$FIRST")
             local SECOND_ID=$( fileToNumber "$SECOND")
             local NEW_ID=$((($FIRST_ID + $SECOND_ID) / 2))
-
-            if [ $METHOD == "eden" ]; then 
-                cd $EDEN
-                conda run -n eden CUDA_VISIBLE_DEVICES=0 python inference.py --frame_0_path $FIRST --frame_1_path $SECOND --interpolated_results_dir $RESULT_DIR 
-                local NEW=$(fileName "$RESULT_DIR/interpolated.png" $NEW_ID)
-                cp "$RESULT_DIR/interpolated.png" $INTERPOLATED_DIR_FULL/$NEW
-                cd - > /dev/null
-            else
-                local INTER_INPUT_PATH="$TMP/interpolateInput"
-                sed -i "s|root_path: ./assets/demo|root_path: $INTER_INPUT_PATH|" cfgs/bim_vfi_demo.yaml
-                #TODO extract the frames
-                conda run -n bimvfi python main.py --cfg cfgs/bim_vfi_demo.yaml
-            fi 
+            
+            local NEW="$INTERPOLATED_DIR_FULL/"$(fileName "interpolated.png" $NEW_ID)
+            local TIME=$(interpolateFrames $FIRST $SECOND $NEW $METHOD)
+            local TOTAL_TIME=$(echo "scale=5; $TOTAL_TIME + $TIME" | bc)
+            local INTERPOLATED_COUNT=$(($INTERPOLATED_COUNT + 1))
 
             local NEW_PAIRS+=("$FIRST $INTERPOLATED_DIR_FULL/$NEW")
             local NEW_PAIRS+=("$INTERPOLATED_DIR_FULL/$NEW $SECOND")
             local FINISHED=$(($FINISHED + 1))
         done
-        PAIRS=("${NEW_PAIRS[@]}")
+        local PAIRS=("${NEW_PAIRS[@]}")
     done   
     
     for ((I = 2; I <= $LAST_ID; I += 2)); do
@@ -213,14 +257,16 @@ interpolate()
         local NEW_SECOND=$(fileName "$SECOND" $SECOND_ID)
         cp "$FIRST" "$INTERPOLATED_DIR_HALF/$NEW_FIRST"
         cp "$SECOND" "$INTERPOLATED_DIR_HALF/$NEW_SECOND"
-        cd $EDEN
-        conda run -n eden CUDA_VISIBLE_DEVICES=0 python inference.py --frame_0_path $FIRST --frame_1_path $SECOND --interpolated_results_dir $RESULT_DIR 
-        local NEW_INTER=$(fileName "$RESULT_DIR/interpolated.png" $(($FIRST_ID + 1)))
-        cp "$RESULT_DIR/interpolated.png" $INTERPOLATED_DIR_HALF/$NEW_INTER
+        local NEW_INTER=$(fileName "interpolated.png" $(($FIRST_ID + 1)))
+        local NEW="$INTERPOLATED_DIR_HALF/$NEW_INTER"
+        local TIME=$(interpolateFrames $FIRST $SECOND $NEW $METHOD)
+        local TOTAL_TIME=$(echo "scale=5; $TOTAL_TIME + $TIME" | bc)
+        local INTERPOLATED_COUNT=$(($INTERPOLATED_COUNT + 1))
         cd - > /dev/null 
     done 
- 
-exit 1 
+
+    local TOTAL_TIME=$(echo "scale=5; $TOTAL_TIME / $INTERPOLATED_COUNT" | bc)
+    echo $TOTAL_TIME 
 }
 
 evaluate()
@@ -229,6 +275,7 @@ evaluate()
     local INPUT_SCENE=$2
     local QUALITY=$3
 
+    SCENE_NAME=$(basename "$INPUT_SCENE")
     local SCENE="$TEMP/scene"
     clearDirs "$SCENE"
     local PATTERN=$(filePattern "$INPUT_SCENE")
@@ -253,17 +300,11 @@ evaluate()
 
     local INTERPOLATED_HALF_EDEN="$TEMP/interpolatedHalfEden"
     local INTERPOLATED_FULL_EDEN="$TEMP/interpolatedFullEden"
-    local INTERPOLATED_HALF_PERVFI="$TEMP/interpolatedHalfPerVFI"
-    local INTERPOLATED_FULL_PERVFI="$TEMP/interpolatedFullPerVFI"
-    interpolate FILES "$INTERPOLATED_HALF_EDEN" "$INTERPOLATED_FULL_EDEN" "eden"
-    interpolate FILES "$INTERPOLATED_HALF_PERVFI" "$INTERPOLATED_FULL_PERVFI" "pervfi"
-    exit 1
+    local INTERPOLATED_HALF_BIMVFI="$TEMP/interpolatedHalfBIMVFI"
+    local INTERPOLATED_FULL_BIMVFI="$TEMP/interpolatedFullBIMVFI"
     
-    REF_FILES['multiInterpolatedHalf']=$(printf "%q " "${ARR[@]}")
-    local ARR="$SCENE/${FILES[$CENTER]}"
-    REF_FILES['multiInterpolatedFull']=$(printf "%q " "${ARR[@]}")
-
-    for KEY in single stereoClose stereoFar multi; do # multiInterpolatedHalf multiInterpolatedFull; do
+    for KEY in single stereoClose stereoFar multi; do
+    #for KEY in multi; do
         clearDirs "$ENCODED" "$DECODED" "$REFERENCE"
         eval "CURRENT_FILES=(${REF_FILES[$KEY]})"
         I=1
@@ -276,7 +317,21 @@ evaluate()
         local DECODE_TIME=$(decode $METHOD "$ENCODED" "$DECODED")
         local SIZE=$(size "$ENCODED")
         local METRICS=$(quality "$REFERENCE" "$DECODED")
-        echo $SCENE, $QUALITY, $METHOD, $METRICS, $ENCODE_TIME, $DECODE_TIME, $SIZE >> ${LOG["$KEY"]} 
+        echo $SCENE_NAME, $QUALITY, $METHOD, $METRICS, $ENCODE_TIME, $DECODE_TIME, $SIZE  >> ${LOG["$KEY"]} 
+        if [ $KEY == "multi" ]; then
+            local INTERPOLATION_TIME=$(interpolate "$DECODED" "$INTERPOLATED_HALF_EDEN" "$INTERPOLATED_FULL_EDEN" "eden")
+            local METRICS=$(quality "$REFERENCE" "$INTERPOLATED_HALF_EDEN")
+            local SIZE_HALF=$(echo "scale=2; $SIZE * 0.5" | bc) 
+            echo $SCENE_NAME, $QUALITY, $METHOD, $METRICS, $INTERPOLATION_TIME, eden, $SIZE_HALF  >> ${LOG["multiInterpolatedHalf"]} 
+            local METRICS=$(quality "$REFERENCE" "$INTERPOLATED_FULL_EDEN")
+            local SIZE_FULL=$(echo "scale=2; $SIZE / $COUNT * 2" | bc)
+            echo $SCENE_NAME, $QUALITY, $METHOD, $METRICS, $INTERPOLATION_TIME, eden, $SIZE_FULL  >> ${LOG["multiInterpolatedFull"]} 
+            local INTERPOLATION_TIME=$(interpolate "$DECODED" "$INTERPOLATED_HALF_BIMVFI" "$INTERPOLATED_FULL_BIMVFI" "bimvfi")
+            local METRICS=$(quality "$REFERENCE" "$INTERPOLATED_HALF_BIMVFI")
+            echo $SCENE_NAME, $QUALITY, $METHOD, $METRICS, $INTERPOLATION_TIME, bimvfi, $SIZE_HALF  >> ${LOG["multiInterpolatedHalf"]} 
+            local METRICS=$(quality "$REFERENCE" "$INTERPOLATED_FULL_BIMVFI")
+            echo $SCENE_NAME, $QUALITY, $METHOD, $METRICS, $INTERPOLATION_TIME, bimvfi, $SIZE_FULL  >> ${LOG["multiInterpolatedFull"]} 
+        fi
     done
 }
 
@@ -285,7 +340,8 @@ measure()
     local SCENE=$1
     local METHODS=("jxl")
     for METHOD in "${METHODS[@]}"; do
-        for QUALITY in $(seq 0.0 0.1 0.05); do
+        #for QUALITY in $(seq 0.0 0.1 0.05); do
+        for QUALITY in 0.5; do
             evaluate $METHOD "$SCENE" $QUALITY
         done
     done
@@ -295,4 +351,4 @@ for SCENE in $SCENES; do
     measure "$INPUT_DIR/$SCENE"
 done
 
-rm -rf $TEMP
+rm -rf $TEM

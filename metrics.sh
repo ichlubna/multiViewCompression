@@ -16,6 +16,8 @@ QTN=quiltToNative/build/
 # https://github.com/dingkeyan93/DISTS
 DISTS=DISTS/DISTS_pytorch/
 
+TEMP_DIR=$(mktemp -d)
+
 filePattern()
 {
     local DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -26,30 +28,19 @@ filePattern()
 DISTORTED_FILES=($(ls "$DISTORTED" | sort))
 REFERENCE_FILES=($(ls "$REFERENCE" | sort))
 DISTORTED_COUNT=${#DISTORTED_FILES[@]}
-REFERENCE_COUNT=${#REFERENCE_FILES[@]}
 
-DISTORTED_PATTERN=""
-REFERENCE_PATTERN=""
-if [[ $DISTORTED_COUNT -eq 1 ]]; then
-    DISTORTED_PATTERN="$DISTORTED/${DISTORTED_FILES[0]}"
-else
-    DISTORTED_PATTERN=$(filePattern "$DISTORTED")
-fi
-if [[ $REFERENCE_COUNT -eq 1 ]]; then
-    REFERENCE_PATTERN="$REFERENCE/${REFERENCE_FILES[0]}"
-else
-    REFERENCE_PATTERN=$(filePattern "$REFERENCE")
-fi
+DISTORTED_PATTERN=$(filePattern "$DISTORTED")
+REFERENCE_PATTERN=$(filePattern "$REFERENCE")
 
 SSIM=$($FFMPEG -i $DISTORTED_PATTERN -i $REFERENCE_PATTERN -lavfi ssim -f null - 2>&1 | grep -o -P '(?<=All:).*(?= )')
 PSNR=$($FFMPEG -i $DISTORTED_PATTERN -i $REFERENCE_PATTERN -lavfi psnr -f null - 2>&1 | grep -o -P '(?<=average:).*(?= min)')
 VMAF=$($FFMPEG -i $DISTORTED_PATTERN -i $REFERENCE_PATTERN -filter_complex libvmaf -f null - 2>&1 | grep -o -P '(?<=VMAF score: ).*(?=)')
 
 FSIM=0
-REFERENCE_FRAMES="$REFERENCE/frames"
+REFERENCE_FRAMES="$TEMP_DIR/frames"
 mkdir -p $REFERENCE_FRAMES
 $FFMPEG -i $REFERENCE_PATTERN -vsync 0 "$REFERENCE_FRAMES/%04d.png"
-DISTORTED_FRAMES="$DISTORTED/frames"
+DISTORTED_FRAMES="$TEMP_DIR/frames"
 mkdir -p $DISTORTED_FRAMES 
 $FFMPEG -i $DISTORTED_PATTERN -vsync 0 "$DISTORTED_FRAMES/%04d.png"
 FRAMES_COUNT=$(ls -1q $REFERENCE_FRAMES | wc -l)
@@ -61,8 +52,8 @@ for I in $(seq 1 $(($FRAMES_COUNT))); do
 done
 FSIM=$(echo "scale=5; $FSIM / $DISTORTED_COUNT" | bc)
 
-QUILT_REF=$REFERENCE/quilt
-QUILT_DIST=$DISTORTED/quilt
+QUILT_REF=$TEMP_DIR/quilt
+QUILT_DIST=$TEMP_DIR/quilt
 mkdir -p $QUILT_REF $QUILT_DIST
 cd $QTN
 LKG_PORTRAIT="-width 3840 -height 2160 -pitch 246.867 -tilt -0.185828 -center 0.350117 -viewPortion 1 -subp 0.000217014"
@@ -82,3 +73,5 @@ cd - > /dev/null
 
 rm -rf $DISTORTED_FRAMES $REFERENCE_FRAMES $QUILT_DIST $QUILT_REF
 echo $SSIM,$PSNR,$VMAF,$FSIM,$NAT_DISTS
+
+rm -rf $TEMP_DIR
