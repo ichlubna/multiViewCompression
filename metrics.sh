@@ -37,12 +37,12 @@ PSNR=$($FFMPEG -i $DISTORTED_PATTERN -i $REFERENCE_PATTERN -lavfi psnr -f null -
 VMAF=$($FFMPEG -i $DISTORTED_PATTERN -i $REFERENCE_PATTERN -filter_complex libvmaf -f null - 2>&1 | grep -o -P '(?<=VMAF score: ).*(?=)')
 
 FSIM=0
-REFERENCE_FRAMES="$TEMP_DIR/frames"
+REFERENCE_FRAMES="$TEMP_DIR/refFrames"
 mkdir -p $REFERENCE_FRAMES
-$FFMPEG -i $REFERENCE_PATTERN -vsync 0 "$REFERENCE_FRAMES/%04d.png"
-DISTORTED_FRAMES="$TEMP_DIR/frames"
+$FFMPEG -i $REFERENCE_PATTERN -fps_mode passthrough -pix_fmt rgb24 "$REFERENCE_FRAMES/%04d.png"
+DISTORTED_FRAMES="$TEMP_DIR/distFrames"
 mkdir -p $DISTORTED_FRAMES 
-$FFMPEG -i $DISTORTED_PATTERN -vsync 0 "$DISTORTED_FRAMES/%04d.png"
+$FFMPEG -i $DISTORTED_PATTERN -fps_mode passthrough -pix_fmt rgb24 "$DISTORTED_FRAMES/%04d.png"
 FRAMES_COUNT=$(ls -1q $REFERENCE_FRAMES | wc -l)
 
 for I in $(seq 1 $(($FRAMES_COUNT))); do

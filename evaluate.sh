@@ -13,6 +13,10 @@ FFMPEG=ffmpeg
 # https://github.com/libjxl/libjxl
 JXL_ENCODER=cjxl
 JXL_DECODER=djxl
+# https://github.com/fraunhoferhhi/vvenc
+VVENC=vvenc/bin/release-static/vvencapp
+# https://github.com/fraunhoferhhi/vvdec
+VVDEC=vvdec/bin/release-static/vvdecapp
 # Paths
 # https://github.com/bbldcver/EDEN
 # Conda setup needs to be prepared for the following tools according to each repository README 
@@ -94,16 +98,26 @@ encode()
     local QUALITY=$3
     local OUTPUT=$4
     local COUNT=$(ls $SCENE -1 | wc -l)
-
+    local PATTERN=$(filePattern "$INPUT")
+    
     if [ $METHOD == "jxl" ]; then 
-        local PATTERN=$(filePattern "$INPUT")
         local INPUT_FILE="$TEMP/reference.apng"
         local OUTPUT_FILE="$OUTPUT/encoded.jxl"
         "$FFMPEG" -y -i "$PATTERN" "$INPUT_FILE"
         local MAX_Q=100 
         local Q=$(codecQuality $QUALITY $MAX_Q)
         local START=$(now)
-        "$JXL_ENCODER" "$INPUT_FILE" "$OUTPUT_FILE" -q $Q --lossless_jpeg=0 -e 10
+        "$JXL_ENCODER" "$INPUT_FILE" "$OUTPUT_FILE" -q $Q --lossless_jpeg=0 >&2
+        local END=$(now)
+    elif [ $METHOD == "vvc" ]; then
+        local INPUT_FILE="$TEMP/reference.y4m"
+        $FFMPEG -y -i "$PATTERN" -pix_fmt yuv420p "$INPUT_FILE"
+        local OUTPUT_FILE="$OUTPUT/encoded.266"
+        local MAX_Q=63 
+        local Q=$(codecQuality $QUALITY $MAX_Q)
+        local START=$(now)
+        "$VVENC" -i "$INPUT_FILE" -q $Q -o "$OUTPUT_FILE" >&2
+
         local END=$(now)
     else
         echo "Unsupported codec: $METHOD"
@@ -116,10 +130,14 @@ decode()
     local METHOD=$1
     local INPUT=$2
     local OUTPUT=$3
+    local FILES=($(ls "$INPUT" | sort))
     if [ $METHOD == "jxl" ]; then 
-        local FILES=($(ls "$INPUT" | sort))
         local START=$(now)
-        "$JXL_DECODER" "$INPUT/${FILES[0]}" "$OUTPUT/decoded.apng"
+        "$JXL_DECODER" "$INPUT/${FILES[0]}" "$OUTPUT/decoded.apng" >&2
+        local END=$(now)
+    elif [ $METHOD == "vvc" ]; then
+        local START=$(now)
+        "$VVDEC" -b "$INPUT/${FILES[0]}" -o "$OUTPUT/decoded.y4m" >&2
         local END=$(now)
     else
         echo "Unsupported codec: $METHOD"
@@ -175,17 +193,17 @@ interpolateFrames()
     if [ $METHOD == "eden" ]; then 
         cd $EDEN
         local START=$(now)
-        conda run -n eden CUDA_VISIBLE_DEVICES=0 python inference.py --frame_0_path $FIRST --frame_1_path $SECOND --interpolated_results_dir $RESULT_DIR &> /dev/null 
+        conda run -n eden CUDA_VISIBLE_DEVICES=0 python inference.py --frame_0_path $FIRST --frame_1_path $SECOND --interpolated_results_dir $RESULT_DIR >&2 
         local END=$(now)
-        cp "$RESULT_DIR/interpolated.png" $OUTPUT
+        $FFMPEG -y -i "$RESULT_DIR/interpolated.png" -pix_fmt rgb24 $OUTPUT
         cd - > /dev/null
     else
         cp $FIRST $INTER_INPUT_PATH_SCENE
         cp $SECOND $INTER_INPUT_PATH_SCENE
         cd $BIMVFI
         local START=$(now)
-        conda run -n bimvfi python main.py --cfg cfgs/bim_vfi_demo.yaml &> /dev/null
-        cp "save/bim_vfi_original/output/demo/scene/0000001.jpg" $OUTPUT
+        conda run -n bimvfi python main.py --cfg cfgs/bim_vfi_demo.yaml >&2
+        $FFMPEG -y -i "save/bim_vfi_original/output/demo/scene/0000001.jpg" -pix_fmt rgb24 $OUTPUT
         local END=$(now)
         cd - > /dev/null
     fi
@@ -202,7 +220,7 @@ interpolate()
     local PATTERN=$(filePattern "$INPUT")
     local IN_DIR="$TEMP/toInterpolate"
     clearDirs "$IN_DIR"
-    $FFMPEG -i "$PATTERN" "$IN_DIR/%04d.png"
+    $FFMPEG -i "$PATTERN" -pix_fmt rgb24 "$IN_DIR/%04d.png"
     mapfile -t IN_FILES < <(find "$IN_DIR" -maxdepth 1 -type f | sort) 
     local COUNT=${#IN_FILES[@]}
    
@@ -279,7 +297,7 @@ evaluate()
     local SCENE="$TEMP/scene"
     clearDirs "$SCENE"
     local PATTERN=$(filePattern "$INPUT_SCENE")
-    $FFMPEG -y -i "$PATTERN" "$SCENE/%04d.png"
+    $FFMPEG -y -i "$PATTERN" -pix_fmt rgb24 "$SCENE/%04d.png"
 
     local COUNT=$(ls "$SCENE" -1 | wc -l)
     local CENTER=$(($COUNT / 2))
@@ -338,8 +356,8 @@ evaluate()
 measure()
 {
     local SCENE=$1
-    local METHODS=("jxl")
-    for METHOD in "${METHODS[@]}"; do
+    #for METHOD in jxl vvc; do
+    for METHOD in jxl vvc; do
         #for QUALITY in $(seq 0.0 0.1 0.05); do
         for QUALITY in 0.5; do
             evaluate $METHOD "$SCENE" $QUALITY
@@ -351,4 +369,4 @@ for SCENE in $SCENES; do
     measure "$INPUT_DIR/$SCENE"
 done
 
-rm -rf $TEM
+rm -rf $TEMP
