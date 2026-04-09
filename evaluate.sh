@@ -1,5 +1,8 @@
 #!/bin/bash
 
+#Docker must be running
+# sudo systemctl start docker
+
 # Parameters
 # The directory contains subirectories with the views, one subdirectory per scene, the views should be named as 0001.png, 0002.png...
 INPUT_DIR=$1
@@ -10,6 +13,7 @@ OUTPUT_DIR=$2
 # Binaries:
 # https://ffmpeg.org
 FFMPEG=ffmpeg
+FFPROBE=ffprobe
 # https://github.com/libjxl/libjxl
 JXL_ENCODER=cjxl
 JXL_DECODER=djxl
@@ -23,6 +27,8 @@ VVDEC=vvdec/bin/release-static/vvdecapp
 EDEN=EDEN
 # https://github.com/KAIST-VICLab/BiM-VFI
 BIMVFI=BIMVFI
+# https://gitlab.com/wg1/jpeg-ai/jpeg-ai-reference-software
+JPEGAI=jpgai
 
 set -ex
 
@@ -56,6 +62,12 @@ TEMP=$(mktemp -d)
 codecQuality() 
 {
     local Q=$(echo "scale=5; $1*$2" | bc)
+    echo $Q
+}
+
+codecQualityInverse() 
+{
+    local Q=$(echo "scale=5; (1.0-$1)*$2" | bc)
     echo $Q
 }
 
@@ -97,7 +109,6 @@ encode()
     local INPUT=$2
     local QUALITY=$3
     local OUTPUT=$4
-    local COUNT=$(ls $SCENE -1 | wc -l)
     local PATTERN=$(filePattern "$INPUT")
     
     if [ $METHOD == "jxl" ]; then 
@@ -114,10 +125,38 @@ encode()
         $FFMPEG -y -i "$PATTERN" -pix_fmt yuv420p "$INPUT_FILE"
         local OUTPUT_FILE="$OUTPUT/encoded.266"
         local MAX_Q=63 
-        local Q=$(codecQuality $QUALITY $MAX_Q)
+        local Q=$(codecQualityInverse $QUALITY $MAX_Q)
         local START=$(now)
         "$VVENC" -i "$INPUT_FILE" -q $Q -o "$OUTPUT_FILE" >&2
-
+        local END=$(now) 
+    elif [ $METHOD == "jpegai" ]; then
+        local INPUT_DIR="input"
+        local OUTPUT_DIR="encoded"
+        clearDirs "$JPEGAI/$INPUT_DIR" "$JPEGAI/$OUTPUT_DIR"
+        cp -r "$INPUT/." "$JPEGAI/$INPUT_DIR"
+        cd $JPEGAI
+        local START=$(now)
+        for FILE in $(ls "$INPUT_DIR" | sort); do
+            local INPUT_FILE="$INPUT_DIR/$FILE"
+            local OUTPUT_FILE="$OUTPUT_DIR/$FILE"
+            local WIDTH=$($FFPROBE -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$INPUT_FILE")
+            local HEIGHT=$($FFPROBE -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$INPUT_FILE")
+            local SIZE=$(stat -c%s "$INPUT_FILE")
+            local BITS=$((SIZE * 8))
+            local BPP_ORIG=$(awk "BEGIN {print $BITS / ($WIDTH * $HEIGHT)}")
+            #local Q=$(echo "scale=5; e(l(2) * -6 * (1 - $QUALITY))" | bc -l)
+            local Q=$(echo "scale=5;
+              raw = e(l(2) * -6 * (1 - $QUALITY));
+              min = e(l(2) * -6 * 1);
+              max = e(l(2) * -6 * 0);
+              (raw - min) / (max - min)
+            " | bc -l)
+            local BPP_TARGET=$(codecQuality $Q $BPP_ORIG)
+            local BPP_TARGET=$(awk "BEGIN {printf \"%d\",1+$BPP_TARGET*100*0.5}")
+            docker run --rm --mount src=.,target=/root/vm_init,type=bind diveraak/jpeg_ai:latest bash -c "source /root/miniconda3/etc/profile.d/conda.sh && conda activate jpeg_ai_vm && python -m src.reco.coders.encoder $INPUT_FILE $OUTPUT_FILE --set_target_bpp $BPP_TARGET" >&2
+        done
+        cd - > /dev/null
+        cp -r "$JPEGAI/$OUTPUT_DIR/." "$OUTPUT"
         local END=$(now)
     else
         echo "Unsupported codec: $METHOD"
@@ -138,6 +177,20 @@ decode()
     elif [ $METHOD == "vvc" ]; then
         local START=$(now)
         "$VVDEC" -b "$INPUT/${FILES[0]}" -o "$OUTPUT/decoded.y4m" >&2
+        local END=$(now)
+    elif [ $METHOD == "jpegai" ]; then
+        local INPUT_DIR="encoded"
+        local OUTPUT_DIR="decoded"
+        clearDirs "$JPEGAI/$OUTPUT_DIR"
+        cd $JPEGAI
+        local START=$(now)
+        for FILE in $(ls "$INPUT_DIR" | sort); do
+            local INPUT_FILE="$INPUT_DIR/$FILE"
+            local OUTPUT_FILE="$OUTPUT_DIR/$FILE"
+            docker run --rm --mount src=.,target=/root/vm_init,type=bind diveraak/jpeg_ai:latest bash -c "source /root/miniconda3/etc/profile.d/conda.sh && conda activate jpeg_ai_vm && python -m src.reco.coders.decoder $INPUT_FILE $OUTPUT_FILE" >&2
+        done
+        cd - > /dev/null
+        cp -r "$JPEGAI/$OUTPUT_DIR/." "$OUTPUT"
         local END=$(now)
     else
         echo "Unsupported codec: $METHOD"
@@ -321,8 +374,8 @@ evaluate()
     local INTERPOLATED_HALF_BIMVFI="$TEMP/interpolatedHalfBIMVFI"
     local INTERPOLATED_FULL_BIMVFI="$TEMP/interpolatedFullBIMVFI"
     
-    for KEY in single stereoClose stereoFar multi; do
-    #for KEY in multi; do
+    #for KEY in single stereoClose stereoFar multi; do
+    for KEY in single; do
         clearDirs "$ENCODED" "$DECODED" "$REFERENCE"
         eval "CURRENT_FILES=(${REF_FILES[$KEY]})"
         I=1
@@ -356,10 +409,10 @@ evaluate()
 measure()
 {
     local SCENE=$1
-    #for METHOD in jxl vvc; do
-    for METHOD in jxl vvc; do
+    #for METHOD in jxl jpegai vvc; do
+    for METHOD in jpegai; do
         #for QUALITY in $(seq 0.0 0.1 0.05); do
-        for QUALITY in 0.5; do
+        for QUALITY in 0.0 0.25 0.5 0.75 1.0; do
             evaluate $METHOD "$SCENE" $QUALITY
         done
     done
