@@ -52,8 +52,8 @@ for I in $(seq 1 $(($FRAMES_COUNT))); do
 done
 FSIM=$(echo "scale=5; $FSIM / $DISTORTED_COUNT" | bc)
 
-QUILT_REF=$TEMP_DIR/quilt
-QUILT_DIST=$TEMP_DIR/quilt
+QUILT_REF="$TEMP_DIR/quiltRef"
+QUILT_DIST="$TEMP_DIR/quiltDist"
 mkdir -p $QUILT_REF $QUILT_DIST
 cd $QTN
 LKG_PORTRAIT="-width 3840 -height 2160 -pitch 246.867 -tilt -0.185828 -center 0.350117 -viewPortion 1 -subp 0.000217014"

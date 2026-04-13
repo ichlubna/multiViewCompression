@@ -21,6 +21,9 @@ JXL_DECODER=djxl
 VVENC=vvenc/bin/release-static/vvencapp
 # https://github.com/fraunhoferhhi/vvdec
 VVDEC=vvdec/bin/release-static/vvdecapp
+# https://gitlab.com/AOMediaCodec/avm
+AVMENC=avm/build/avmenc
+AVMDEC=avm/build/avmdec
 # Paths
 # https://github.com/bbldcver/EDEN
 # Conda setup needs to be prepared for the following tools according to each repository README 
@@ -62,12 +65,14 @@ TEMP=$(mktemp -d)
 codecQuality() 
 {
     local Q=$(echo "scale=5; $1*$2" | bc)
+    local Q=$(printf "%.0f" "$Q")
     echo $Q
 }
 
 codecQualityInverse() 
 {
     local Q=$(echo "scale=5; (1.0-$1)*$2" | bc)
+    local Q=$(printf "%.0f" "$Q")
     echo $Q
 }
 
@@ -158,6 +163,22 @@ encode()
         cd - > /dev/null
         cp -r "$JPEGAI/$OUTPUT_DIR/." "$OUTPUT"
         local END=$(now)
+    elif [ $METHOD == "av1" ]; then
+        local MAX_Q=62
+        local Q=$(codecQualityInverse $QUALITY $MAX_Q)
+        local Q=$((1 + $Q))
+        local START=$(now)
+        "$FFMPEG" -i "$PATTERN" -c:v libaom-av1 -cpu-used 8 -crf $Q "$OUTPUT/encoded.mkv" >&2
+        local END=$(now) 
+    elif [ $METHOD == "av2" ]; then
+        local INPUT_FILE="$TEMP/reference.y4m"
+        $FFMPEG -y -i "$PATTERN" -pix_fmt yuv420p "$INPUT_FILE"
+        local OUTPUT_FILE="$OUTPUT/encoded.av2"
+        local MAX_Q=255 
+        local Q=$(codecQualityInverse $QUALITY $MAX_Q)
+        local START=$(now)
+        "$AVMENC" "$INPUT_FILE" --qp=$Q --row-mt=1 --tile-rows=2 --tile-columns=2 --end-usage=q --cpu-used=8 --threads=8 -o "$OUTPUT_FILE" >&2
+        local END=$(now) 
     else
         echo "Unsupported codec: $METHOD"
     fi
@@ -191,6 +212,14 @@ decode()
         done
         cd - > /dev/null
         cp -r "$JPEGAI/$OUTPUT_DIR/." "$OUTPUT"
+        local END=$(now)
+    elif [ $METHOD == "av1" ]; then
+        local START=$(now)
+        "$FFMPEG" -i "$INPUT/${FILES[0]}" "$OUTPUT/%04d.png" >&2
+        local END=$(now)
+    elif [ $METHOD == "av2" ]; then
+        local START=$(now)
+        "$AVMDEC" "$INPUT/${FILES[0]}" -o "$OUTPUT/decoded.y4m" >&2
         local END=$(now)
     else
         echo "Unsupported codec: $METHOD"
@@ -375,7 +404,7 @@ evaluate()
     local INTERPOLATED_FULL_BIMVFI="$TEMP/interpolatedFullBIMVFI"
     
     #for KEY in single stereoClose stereoFar multi; do
-    for KEY in single; do
+    for KEY in stereoFar; do
         clearDirs "$ENCODED" "$DECODED" "$REFERENCE"
         eval "CURRENT_FILES=(${REF_FILES[$KEY]})"
         I=1
@@ -409,10 +438,10 @@ evaluate()
 measure()
 {
     local SCENE=$1
-    #for METHOD in jxl jpegai vvc; do
-    for METHOD in jpegai; do
-        #for QUALITY in $(seq 0.0 0.1 0.05); do
-        for QUALITY in 0.0 0.25 0.5 0.75 1.0; do
+    #for METHOD in jxl jpegai vvc av1 av2; do
+    for METHOD in av2; do
+        for QUALITY in $(seq 0.0 0.1 1.0); do
+        #for QUALITY in 0.5; do
             evaluate $METHOD "$SCENE" $QUALITY
         done
     done
