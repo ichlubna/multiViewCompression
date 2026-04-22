@@ -71,7 +71,5 @@ cd $DISTS
 NAT_DISTS=$(python DISTS_pt.py --dist "$QUILT_DIST/output.png" --ref "$QUILT_REF/output.png" 2>/dev/null)
 cd - > /dev/null 
 
-rm -rf $DISTORTED_FRAMES $REFERENCE_FRAMES $QUILT_DIST $QUILT_REF
-echo $SSIM,$PSNR,$VMAF,$FSIM,$NAT_DISTS
-
 rm -rf $TEMP_DIR
+echo $SSIM,$PSNR,$VMAF,$FSIM,$NAT_DISTS

@@ -32,6 +32,9 @@ EDEN=EDEN
 BIMVFI=BIMVFI
 # https://gitlab.com/wg1/jpeg-ai/jpeg-ai-reference-software
 JPEGAI=jpgai
+# https://github.com/microsoft/DCVC/
+# Edited with: https://github.com/microsoft/DCVC/issues/85
+DCVC=DCVC
 
 set -ex
 
@@ -108,6 +111,14 @@ elapsed()
     echo $(( (END - START)/1000000 ))
 }
 
+clearDirs()
+{
+    for DIR in "$@"; do
+        mkdir -p "$DIR"
+        rm -f "$DIR"/*
+    done
+}
+
 encode()
 {
     local METHOD=$1
@@ -146,6 +157,7 @@ encode()
             local OUTPUT_FILE="$OUTPUT_DIR/$FILE"
             local WIDTH=$($FFPROBE -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$INPUT_FILE")
             local HEIGHT=$($FFPROBE -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$INPUT_FILE")
+            echo $WIDTH"x"$HEIGHT > $TEMP/resolution.txt
             local SIZE=$(stat -c%s "$INPUT_FILE")
             local BITS=$((SIZE * 8))
             local BPP_ORIG=$(awk "BEGIN {print $BITS / ($WIDTH * $HEIGHT)}")
@@ -179,10 +191,47 @@ encode()
         local START=$(now)
         "$AVMENC" "$INPUT_FILE" --qp=$Q --row-mt=1 --tile-rows=2 --tile-columns=2 --end-usage=q --cpu-used=8 --threads=8 -o "$OUTPUT_FILE" >&2
         local END=$(now) 
+    elif [ $METHOD == "dcvc" ]; then 
+        local MAX_Q=63
+        local Q=$(codecQuality $QUALITY $MAX_Q)
+        local WIDTH=$($FFPROBE -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$PATTERN")
+        local HEIGHT=$($FFPROBE -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$PATTERN")
+        echo $WIDTH"x"$HEIGHT > $TEMP/resolution.txt
+        local FRAMES=$($FFPROBE -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nokey=1:noprint_wrappers=1 "$PATTERN")
+        echo $FRAMES > $TEMP/count.txt
+        clearDirs "$DCVC/test" "$DCVC/test/test" "$DCVC/output"
+        $FFMPEG -i "$PATTERN" -pix_fmt rgb24 "$DCVC/test/test/im%05d.png"
+        cd $DCVC
+        echo "{" > dataset.json
+        echo "\"root_path\": \"$(pwd $DCVC)\"," >> dataset.json
+        echo "\"test_classes\": {" >> dataset.json
+        echo "\"\": {" >> dataset.json
+        echo "\"test\": 1," >> dataset.json
+        echo "\"base_path\": \"test\"," >> dataset.json
+        echo "\"src_type\": \"png\"," >> dataset.json
+        echo "\"sequences\": {" >> dataset.json
+        echo "\"test\": {\"width\": $WIDTH, \"height\": $HEIGHT, \"frames\": $FRAMES, \"intra_period\": 9999}" >> dataset.json
+        echo "}" >> dataset.json
+        echo "}" >> dataset.json
+        echo "}" >> dataset.json
+        echo "}" >> dataset.json
+        local LOG=$(conda run -n dcvc python test_video.py --model_path_i ./checkpoints/cvpr2024_image.pth.tar --model_path_p ./checkpoints/cvpr2024_video.pth.tar --rate_num 2 --test_config ./dataset.json --cuda 1 --worker 1 --output_path output.json --force_intra_period 9999 --write_stream 1 --save_decoded_frame 1 --stream_path output --verbose 1 --q_indexes_i $Q $Q)
+        read ENCODE_TIME DECODE_TIME < <(echo "$LOG" | grep "average encoding time" | tail -n 1 | sed -E 's/.*encoding time ([0-9]+) ms, average decoding time ([0-9]+) ms.*/\1 \2/')
+        local AVE_ALL_FRAME_BPP=$(grep -o '"ave_all_frame_bpp":[^,]*' "output/test_q$Q.json" | cut -d: -f2)
+        local PIXEL_NUM=$(grep -o '"frame_pixel_num":[^,]*' "output/test_q$Q.json" | cut -d: -f2)
+        local SIZE=$(echo "$AVE_ALL_FRAME_BPP * $PIXEL_NUM * $FRAMES" | bc)
+        local SIZE=$(printf "%.0f\n" "$SIZE")
+        truncate -s $SIZE "$OUTPUT/placeholder.bin"
+        cd - > /dev/null
     else
         echo "Unsupported codec: $METHOD"
     fi
-    echo $(elapsed $START $END)
+    if [[ -v START && -v END ]]; then
+        echo $(elapsed $START $END)
+    else
+        echo $ENCODE_TIME
+        echo $DECODE_TIME > $TEMP/decodeTime.txt
+    fi
 }
 
 decode()
@@ -207,8 +256,12 @@ decode()
         local START=$(now)
         for FILE in $(ls "$INPUT_DIR" | sort); do
             local INPUT_FILE="$INPUT_DIR/$FILE"
-            local OUTPUT_FILE="$OUTPUT_DIR/$FILE"
+            local BASE="${FILE%.*}"
+            local OUTPUT_FILE="$OUTPUT_DIR/$BASE.yuv"
             docker run --rm --mount src=.,target=/root/vm_init,type=bind diveraak/jpeg_ai:latest bash -c "source /root/miniconda3/etc/profile.d/conda.sh && conda activate jpeg_ai_vm && python -m src.reco.coders.decoder $INPUT_FILE $OUTPUT_FILE" >&2
+            local RES=$(cat $TEMP"/resolution.txt")
+            $FFMPEG -f rawvideo -pix_fmt yuv444p -color_range pc -colorspace bt709 -color_trc bt709 -color_primaries bt709 -video_size $RES -i $OUTPUT_FILE $OUTPUT_DIR/$BASE.png
+            rm -f $OUTPUT_FILE
         done
         cd - > /dev/null
         cp -r "$JPEGAI/$OUTPUT_DIR/." "$OUTPUT"
@@ -221,18 +274,27 @@ decode()
         local START=$(now)
         "$AVMDEC" "$INPUT/${FILES[0]}" -o "$OUTPUT/decoded.y4m" >&2
         local END=$(now)
+    elif [ $METHOD == "dcvc" ]; then
+        local RES=$(cat $TEMP"/resolution.txt")
+        local COUNT=$(cat $TEMP"/count.txt")
+        local ID=0
+        for FILE in $DCVC/output/*.yuv; do 
+            local NAME=$(basename "$FILE")
+            local NAME="${NAME%.*}"
+            $FFMPEG -y -f rawvideo -pix_fmt yuv444p -color_range pc -colorspace bt709 -color_trc bt709 -color_primaries bt709 -video_size $RES -i $FILE "$OUTPUT/$NAME.png" >&2
+            ID=$((ID + 1))
+            if [ $ID -ge $COUNT ]; then
+                break
+            fi
+        done
     else
         echo "Unsupported codec: $METHOD"
     fi
-    echo $(elapsed $START $END)
-}
-
-clearDirs()
-{
-    for DIR in "$@"; do
-        mkdir -p "$DIR"
-        rm -f "$DIR"/*
-    done
+    if [[ -v START && -v END ]]; then
+        echo $(elapsed $START $END)
+    else
+        echo $(cat "$TEMP/decodeTime.txt")
+    fi
 }
 
 fileName()
@@ -438,8 +500,8 @@ evaluate()
 measure()
 {
     local SCENE=$1
-    #for METHOD in jxl jpegai vvc av1 av2; do
-    for METHOD in av2; do
+    #for METHOD in jxl jpegai vvc av1 av2 dcvc; do
+    for METHOD in dcvc; do
         for QUALITY in $(seq 0.0 0.1 1.0); do
         #for QUALITY in 0.5; do
             evaluate $METHOD "$SCENE" $QUALITY
