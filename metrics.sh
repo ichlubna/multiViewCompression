@@ -15,6 +15,8 @@ ISM=image-similarity-measures
 QTN=quiltToNative/build/
 # https://github.com/dingkeyan93/DISTS
 DISTS=DISTS/DISTS_pytorch/
+# https://github.com/zwx8981/LIQE
+LIQE=/LIQE-main
 
 TEMP_DIR=$(mktemp -d)
 
@@ -37,6 +39,9 @@ PSNR=$($FFMPEG -i $DISTORTED_PATTERN -i $REFERENCE_PATTERN -lavfi psnr -f null -
 VMAF=$($FFMPEG -i $DISTORTED_PATTERN -i $REFERENCE_PATTERN -filter_complex libvmaf -f null - 2>&1 | grep -o -P '(?<=VMAF score: ).*(?=)')
 
 FSIM=0
+LIQE=0
+QUALICLIP=0
+ARNIQA=0
 REFERENCE_FRAMES="$TEMP_DIR/refFrames"
 mkdir -p $REFERENCE_FRAMES
 $FFMPEG -i $REFERENCE_PATTERN -fps_mode passthrough -pix_fmt rgb24 "$REFERENCE_FRAMES/%04d.png"
@@ -49,8 +54,16 @@ for I in $(seq 1 $(($FRAMES_COUNT))); do
     FILE=$(printf "%04d.png" "$I")
     CURRENT_FSIM=$($ISM --org_img_path=$REFERENCE_FRAMES/$FILE --pred_img_path=$DISTORTED_FRAMES/$FILE --metric fsim | tail -n 1 | jq -r '.metrics.fsim')
     FSIM=$(echo "scale=5; $FSIM + $CURRENT_FSIM" | bc)
+    NOREF=$(python noRef.py $DISTORTED_FRAMES/$FILE)
+    read LIQE QUALICLIP ARNIQA <<< $(echo "$NOREF" | tail -n 1)
+    LIQE=$(echo "scale=5; $LIQE + $LIQE" | bc)
+    QUALICLIP=$(echo "scale=5; $QUALICLIP + $QUALICLIP" | bc)
+    ARNIQA=$(echo "scale=5; $ARNIQA + $ARNIQA" | bc)
 done
 FSIM=$(echo "scale=5; $FSIM / $DISTORTED_COUNT" | bc)
+LIQE=$(echo "scale=5; $LIQE / $DISTORTED_COUNT" | bc)
+QUALICLIP=$(echo "scale=5; $QUALICLIP / $DISTORTED_COUNT" | bc)
+ARNIQA=$(echo "scale=5; $ARNIQA / $DISTORTED_COUNT" | bc)
 
 QUILT_REF="$TEMP_DIR/quiltRef"
 QUILT_DIST="$TEMP_DIR/quiltDist"
@@ -72,4 +85,4 @@ NAT_DISTS=$(python DISTS_pt.py --dist "$QUILT_DIST/output.png" --ref "$QUILT_REF
 cd - > /dev/null 
 
 rm -rf $TEMP_DIR
-echo $SSIM,$PSNR,$VMAF,$FSIM,$NAT_DISTS
+echo $SSIM,$PSNR,$VMAF,$FSIM,$NAT_DISTS,$LIQE,$QUALICLIP,$ARNIQA

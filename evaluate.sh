@@ -57,12 +57,12 @@ LOG['multi']="$OUTPUT_DIR/multi.csv"
 LOG['multiInterpolatedHalf']="$OUTPUT_DIR/multiInterpolatedHalf.csv"
 LOG['multiInterpolatedFull']="$OUTPUT_DIR/multiInterpolatedFull.csv"
 
-HEADER="scene, quality, compression, SSIM, PSNR, VMAF, FSIM, NAT_DISTS, encode time, decode time, size"
+HEADER="scene, quality, compression, SSIM, PSNR, VMAF, FSIM, NAT_DISTS, LIQE, QUALICLIP, ARNIQA, encode time, decode time, size"
 for KEY in "${!LOG[@]}"; do
     >${LOG[$KEY]}
     echo $HEADER >> ${LOG[$KEY]}
 done
-HEADER="scene, quality, compression, SSIM, PSNR, VMAF, FSIM, NAT_DISTS, interpolation time, interpolation method, size"
+HEADER="scene, quality, compression, SSIM, PSNR, VMAF, FSIM, NAT_DISTS, LIQE, QUALICLIP, ARNIQA, interpolation time, interpolation method, size"
 >${LOG['multiInterpolatedHalf']}
 echo $HEADER >> ${LOG['multiInterpolatedHalf']}
 >${LOG['multiInterpolatedFull']}
@@ -603,8 +603,8 @@ measure()
     local SCENE=$1
     #for METHOD in jxl jpegai vvc av1 av2 dcvc dcmvc glc; do
     for METHOD in glc; do
-        for QUALITY in $(seq 0.0 0.1 1.0); do
-        #for QUALITY in 1.0; do
+        #for QUALITY in $(seq 0.0 0.1 1.0); do
+        for QUALITY in 1.0; do
             evaluate $METHOD "$SCENE" $QUALITY
         done
     done
