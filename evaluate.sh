@@ -39,6 +39,8 @@ DCVC=DCVC
 # Edited with: https://github.com/Austin4USTC/DCMVC/issues/5
 # Added custom ppm export
 DCMVC=DCMVC
+# https://github.com/jzyustc/GLC
+GLC=GLC
 
 set -ex
 
@@ -250,12 +252,62 @@ encode()
         echo "}" >> dataset.json
         echo "}" >> dataset.json
         echo "}" >> dataset.json
-        local LOG=$(conda run -n DCMVC python test_video.py --i_frame_model_path ./checkpoints/cvpr2023_image_psnr.pth.tar --p_frame_model_path ./checkpoints/dcmvc_p_frame.pth.tar --rate_num 2 --test_config ./dataset.json --cuda 1 --worker 1 --output_path output.json --force_intra_period 9999 --write_stream 1 --save_decoded_frame 1 --stream_path output --verbose 1 --i_frame_q_indexes $Q $Q --p_frame_q_indexes $Q $Q 2>&1)
-        local TIME=$(echo "$LOG" | awk '/Total elapsed time/ {print $4 * 60 * 1000}')
-        local ENCODE_TIME=$(echo "$TIME * 0.65" | bc)
-        local DECODE_TIME=$(echo "$TIME * 0.35" | bc)
+        local LOG=$(conda run -n DCMVC python test_video.py --i_frame_model_path ./checkpoints/cvpr2023_image_psnr.pth.tar --p_frame_model_path ./checkpoints/dcmvc_p_frame.pth.tar --rate_num 2 --test_config ./dataset.json --cuda 1 --worker 1 --output_path output.json --force_intra_period 9999 --write_stream 1 --save_decoded_frame 1 --stream_path output --verbose 2 --i_frame_q_indexes $Q $Q --p_frame_q_indexes $Q $Q 2>&1)
+        TIME=$(awk '
+        match($0, /([0-9]+(\.[0-9]+)?) seconds/, m) {
+            sum += m[1]; count++
+        }
+        END {
+            print (count ? (sum / count) * 1000 : 0)
+        }
+        ' <<< "$LOG")
+        local ENCODE_TIME=$(echo "$TIME * 0.6" | bc)
+        local DECODE_TIME=$(echo "$TIME * 0.4" | bc)
         local AVE_ALL_FRAME_BPP=$(jq -r '."".test."000".ave_all_frame_bpp' output.json)
         local PIXEL_NUM=$(jq -r '."".test."000".frame_pixel_num' output.json)
+        local SIZE=$(echo "$AVE_ALL_FRAME_BPP * $PIXEL_NUM * $FRAMES" | bc)
+        local SIZE=$(printf "%.0f\n" "$SIZE")
+        truncate -s $SIZE "$OUTPUT/placeholder.bin"
+        cd - > /dev/null
+    elif [ $METHOD == "glc" ]; then 
+        local MAX_Q=63
+        local Q=$(codecQuality $QUALITY $MAX_Q)
+        echo $WIDTH"x"$HEIGHT > $TEMP/resolution.txt
+        echo $FRAMES > $TEMP/count.txt
+        clearDirs "$GLC/test" "$GLC/test/test" "$GLC/output"
+        $FFMPEG -i "$PATTERN" -pix_fmt rgb24 "$GLC/test/test/im%05d.png"
+        cd $GLC
+        echo "{" > dataset.json
+        echo "\"root_path\": \"$(pwd $GLC)\"," >> dataset.json
+        echo "\"test_classes\": {" >> dataset.json
+        echo "\"\": {" >> dataset.json
+        echo "\"test\": 1," >> dataset.json
+        echo "\"base_path\": \"test\"," >> dataset.json
+        echo "\"src_type\": \"png\"," >> dataset.json
+        echo "\"sequences\": {" >> dataset.json
+        echo "\"test\": {\"width\": $WIDTH, \"height\": $HEIGHT, \"frames\": $FRAMES, \"intra_period\": 9999}" >> dataset.json
+        echo "}" >> dataset.json
+        echo "}" >> dataset.json
+        echo "}" >> dataset.json
+        echo "}" >> dataset.json
+        local LOG=$(python test_video.py --rate_num 1 --test_config dataset.json --cuda 1 --cuda_idx 0 -w 1 --save_decoded_frame 1 --stream_path ./output --output_path ./output.json --model_path_i ./checkpoints/GLC_image.pth.tar --model_path_p ./checkpoints/GLC_Video.pth.tar --verbose 2 --q_indexes_i $Q --q_indexes_p $Q)
+        TIME=$(awk '
+        {
+            while (match($0, /([0-9]+(\.[0-9]+)?) ms/, m)) {
+                sum += m[1]
+                count++
+                $0 = substr($0, RSTART + RLENGTH)
+            }
+        }
+        END {
+            if (count) print sum / count
+            else print 0
+        }
+        ' <<< "$LOG")
+        local ENCODE_TIME=$(echo "$TIME * 0.6" | bc)
+        local DECODE_TIME=$(echo "$TIME * 0.4" | bc) 
+        local AVE_ALL_FRAME_BPP=$(grep -o '"ave_all_frame_bpp":[^,]*' "output/test_q$Q.json" | cut -d: -f2)
+        local PIXEL_NUM=$(grep -o '"frame_pixel_num":[^,]*' "output/test_q$Q.json" | cut -d: -f2)
         local SIZE=$(echo "$AVE_ALL_FRAME_BPP * $PIXEL_NUM * $FRAMES" | bc)
         local SIZE=$(printf "%.0f\n" "$SIZE")
         truncate -s $SIZE "$OUTPUT/placeholder.bin"
@@ -330,6 +382,12 @@ decode()
         local ID=0
         local OUT_PATH=$(find "$DCMVC/output/" -type f -name '*.ppm' -print -quit | xargs -r dirname)
         $FFMPEG -y -i "$OUT_PATH/%03d.ppm" -pix_fmt rgb24 "$OUTPUT/%04d.png" >&2
+    elif [ $METHOD == "glc" ]; then
+        local RES=$(cat $TEMP"/resolution.txt")
+        local COUNT=$(cat $TEMP"/count.txt")
+        local ID=0
+        local OUT_PATH=$(find "$GLC/output/" -type f -name '*.png' -print -quit | xargs -r dirname)
+        $FFMPEG -y -i "$OUT_PATH/im%05d.png" -pix_fmt rgb24 "$OUTPUT/%04d.png" >&2
     else
         echo "Unsupported codec: $METHOD"
     fi
@@ -543,10 +601,10 @@ evaluate()
 measure()
 {
     local SCENE=$1
-    #for METHOD in jxl jpegai vvc av1 av2 dcvc dcmvc; do
-    for METHOD in dcmvc; do
+    #for METHOD in jxl jpegai vvc av1 av2 dcvc dcmvc glc; do
+    for METHOD in glc; do
         for QUALITY in $(seq 0.0 0.1 1.0); do
-        #for QUALITY in 0.5; do
+        #for QUALITY in 1.0; do
             evaluate $METHOD "$SCENE" $QUALITY
         done
     done
