@@ -35,6 +35,10 @@ JPEGAI=jpgai
 # https://github.com/microsoft/DCVC/
 # Edited with: https://github.com/microsoft/DCVC/issues/85
 DCVC=DCVC
+# https://github.com/Austin4USTC/DCMVC
+# Edited with: https://github.com/Austin4USTC/DCMVC/issues/5
+# Added custom ppm export
+DCMVC=DCMVC
 
 set -ex
 
@@ -115,7 +119,9 @@ clearDirs()
 {
     for DIR in "$@"; do
         mkdir -p "$DIR"
-        rm -f "$DIR"/*
+        if [ -n "$DIR" ] && [ -e "$DIR" ] && [ "$DIR" != "/" ]; then
+            rm -rf "$DIR"/*
+        fi
     done
 }
 
@@ -126,12 +132,15 @@ encode()
     local QUALITY=$3
     local OUTPUT=$4
     local PATTERN=$(filePattern "$INPUT")
+    local WIDTH=$($FFPROBE -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$PATTERN")
+    local HEIGHT=$($FFPROBE -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$PATTERN")
+    local FRAMES=$($FFPROBE -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nokey=1:noprint_wrappers=1 "$PATTERN")
     
     if [ $METHOD == "jxl" ]; then 
         local INPUT_FILE="$TEMP/reference.apng"
         local OUTPUT_FILE="$OUTPUT/encoded.jxl"
         "$FFMPEG" -y -i "$PATTERN" "$INPUT_FILE"
-        local MAX_Q=100 
+        local MAX_Q=99 
         local Q=$(codecQuality $QUALITY $MAX_Q)
         local START=$(now)
         "$JXL_ENCODER" "$INPUT_FILE" "$OUTPUT_FILE" -q $Q --lossless_jpeg=0 >&2
@@ -155,8 +164,6 @@ encode()
         for FILE in $(ls "$INPUT_DIR" | sort); do
             local INPUT_FILE="$INPUT_DIR/$FILE"
             local OUTPUT_FILE="$OUTPUT_DIR/$FILE"
-            local WIDTH=$($FFPROBE -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$INPUT_FILE")
-            local HEIGHT=$($FFPROBE -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$INPUT_FILE")
             echo $WIDTH"x"$HEIGHT > $TEMP/resolution.txt
             local SIZE=$(stat -c%s "$INPUT_FILE")
             local BITS=$((SIZE * 8))
@@ -186,7 +193,7 @@ encode()
         local INPUT_FILE="$TEMP/reference.y4m"
         $FFMPEG -y -i "$PATTERN" -pix_fmt yuv420p "$INPUT_FILE"
         local OUTPUT_FILE="$OUTPUT/encoded.av2"
-        local MAX_Q=255 
+        local MAX_Q=254 
         local Q=$(codecQualityInverse $QUALITY $MAX_Q)
         local START=$(now)
         "$AVMENC" "$INPUT_FILE" --qp=$Q --row-mt=1 --tile-rows=2 --tile-columns=2 --end-usage=q --cpu-used=8 --threads=8 -o "$OUTPUT_FILE" >&2
@@ -194,10 +201,7 @@ encode()
     elif [ $METHOD == "dcvc" ]; then 
         local MAX_Q=63
         local Q=$(codecQuality $QUALITY $MAX_Q)
-        local WIDTH=$($FFPROBE -v error -select_streams v:0 -show_entries stream=width -of csv=p=0 "$PATTERN")
-        local HEIGHT=$($FFPROBE -v error -select_streams v:0 -show_entries stream=height -of csv=p=0 "$PATTERN")
         echo $WIDTH"x"$HEIGHT > $TEMP/resolution.txt
-        local FRAMES=$($FFPROBE -v error -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of default=nokey=1:noprint_wrappers=1 "$PATTERN")
         echo $FRAMES > $TEMP/count.txt
         clearDirs "$DCVC/test" "$DCVC/test/test" "$DCVC/output"
         $FFMPEG -i "$PATTERN" -pix_fmt rgb24 "$DCVC/test/test/im%05d.png"
@@ -217,8 +221,41 @@ encode()
         echo "}" >> dataset.json
         local LOG=$(conda run -n dcvc python test_video.py --model_path_i ./checkpoints/cvpr2024_image.pth.tar --model_path_p ./checkpoints/cvpr2024_video.pth.tar --rate_num 2 --test_config ./dataset.json --cuda 1 --worker 1 --output_path output.json --force_intra_period 9999 --write_stream 1 --save_decoded_frame 1 --stream_path output --verbose 1 --q_indexes_i $Q $Q)
         read ENCODE_TIME DECODE_TIME < <(echo "$LOG" | grep "average encoding time" | tail -n 1 | sed -E 's/.*encoding time ([0-9]+) ms, average decoding time ([0-9]+) ms.*/\1 \2/')
+        local ENCODE_TIME=$(echo "$ENCODE_TIME * $FRAMES" | bc)
+        local DECODE_TIME=$(echo "$DECODE_TIME * $FRAMES" | bc)
         local AVE_ALL_FRAME_BPP=$(grep -o '"ave_all_frame_bpp":[^,]*' "output/test_q$Q.json" | cut -d: -f2)
         local PIXEL_NUM=$(grep -o '"frame_pixel_num":[^,]*' "output/test_q$Q.json" | cut -d: -f2)
+        local SIZE=$(echo "$AVE_ALL_FRAME_BPP * $PIXEL_NUM * $FRAMES" | bc)
+        local SIZE=$(printf "%.0f\n" "$SIZE")
+        truncate -s $SIZE "$OUTPUT/placeholder.bin"
+        cd - > /dev/null
+    elif [ $METHOD == "dcmvc" ]; then 
+        local MAX_Q=63
+        local Q=$(codecQuality $QUALITY $MAX_Q)
+        echo $WIDTH"x"$HEIGHT > $TEMP/resolution.txt
+        echo $FRAMES > $TEMP/count.txt
+        clearDirs "$DCMVC/test" "$DCMVC/test/test" "$DCMVC/output" "$DCMVC/decoded_frames"
+        $FFMPEG -i "$PATTERN" -pix_fmt rgb24 "$DCMVC/test/test/im%05d.png"
+        cd $DCMVC
+        echo "{" > dataset.json
+        echo "\"root_path\": \"$(pwd $DCMVC)\"," >> dataset.json
+        echo "\"test_classes\": {" >> dataset.json
+        echo "\"\": {" >> dataset.json
+        echo "\"test\": 1," >> dataset.json
+        echo "\"base_path\": \"test\"," >> dataset.json
+        echo "\"src_type\": \"png\"," >> dataset.json
+        echo "\"sequences\": {" >> dataset.json
+        echo "\"test\": {\"width\": $WIDTH, \"height\": $HEIGHT, \"frames\": $FRAMES, \"gop\": 9999}" >> dataset.json
+        echo "}" >> dataset.json
+        echo "}" >> dataset.json
+        echo "}" >> dataset.json
+        echo "}" >> dataset.json
+        local LOG=$(conda run -n DCMVC python test_video.py --i_frame_model_path ./checkpoints/cvpr2023_image_psnr.pth.tar --p_frame_model_path ./checkpoints/dcmvc_p_frame.pth.tar --rate_num 2 --test_config ./dataset.json --cuda 1 --worker 1 --output_path output.json --force_intra_period 9999 --write_stream 1 --save_decoded_frame 1 --stream_path output --verbose 1 --i_frame_q_indexes $Q $Q --p_frame_q_indexes $Q $Q 2>&1)
+        local TIME=$(echo "$LOG" | awk '/Total elapsed time/ {print $4 * 60 * 1000}')
+        local ENCODE_TIME=$(echo "$TIME * 0.65" | bc)
+        local DECODE_TIME=$(echo "$TIME * 0.35" | bc)
+        local AVE_ALL_FRAME_BPP=$(jq -r '."".test."000".ave_all_frame_bpp' output.json)
+        local PIXEL_NUM=$(jq -r '."".test."000".frame_pixel_num' output.json)
         local SIZE=$(echo "$AVE_ALL_FRAME_BPP * $PIXEL_NUM * $FRAMES" | bc)
         local SIZE=$(printf "%.0f\n" "$SIZE")
         truncate -s $SIZE "$OUTPUT/placeholder.bin"
@@ -278,7 +315,7 @@ decode()
         local RES=$(cat $TEMP"/resolution.txt")
         local COUNT=$(cat $TEMP"/count.txt")
         local ID=0
-        for FILE in $DCVC/output/*.yuv; do 
+        for FILE in $DCVC/*.yuv; do 
             local NAME=$(basename "$FILE")
             local NAME="${NAME%.*}"
             $FFMPEG -y -f rawvideo -pix_fmt yuv444p -color_range pc -colorspace bt709 -color_trc bt709 -color_primaries bt709 -video_size $RES -i $FILE "$OUTPUT/$NAME.png" >&2
@@ -287,6 +324,12 @@ decode()
                 break
             fi
         done
+    elif [ $METHOD == "dcmvc" ]; then
+        local RES=$(cat $TEMP"/resolution.txt")
+        local COUNT=$(cat $TEMP"/count.txt")
+        local ID=0
+        local OUT_PATH=$(find "$DCMVC/output/" -type f -name '*.ppm' -print -quit | xargs -r dirname)
+        $FFMPEG -y -i "$OUT_PATH/%03d.ppm" -pix_fmt rgb24 "$OUTPUT/%04d.png" >&2
     else
         echo "Unsupported codec: $METHOD"
     fi
@@ -466,7 +509,7 @@ evaluate()
     local INTERPOLATED_FULL_BIMVFI="$TEMP/interpolatedFullBIMVFI"
     
     #for KEY in single stereoClose stereoFar multi; do
-    for KEY in stereoFar; do
+    for KEY in single; do
         clearDirs "$ENCODED" "$DECODED" "$REFERENCE"
         eval "CURRENT_FILES=(${REF_FILES[$KEY]})"
         I=1
@@ -500,8 +543,8 @@ evaluate()
 measure()
 {
     local SCENE=$1
-    #for METHOD in jxl jpegai vvc av1 av2 dcvc; do
-    for METHOD in dcvc; do
+    #for METHOD in jxl jpegai vvc av1 av2 dcvc dcmvc; do
+    for METHOD in dcmvc; do
         for QUALITY in $(seq 0.0 0.1 1.0); do
         #for QUALITY in 0.5; do
             evaluate $METHOD "$SCENE" $QUALITY
@@ -514,3 +557,4 @@ for SCENE in $SCENES; do
 done
 
 rm -rf $TEMP
+tail -n +1 "$OUTPUT_DIR"/*
