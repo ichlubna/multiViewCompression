@@ -221,10 +221,9 @@ encode()
         echo "}" >> dataset.json
         echo "}" >> dataset.json
         echo "}" >> dataset.json
-        local LOG=$(conda run -n dcvc python test_video.py --model_path_i ./checkpoints/cvpr2024_image.pth.tar --model_path_p ./checkpoints/cvpr2024_video.pth.tar --rate_num 2 --test_config ./dataset.json --cuda 1 --worker 1 --output_path output.json --force_intra_period 9999 --write_stream 1 --save_decoded_frame 1 --stream_path output --verbose 1 --q_indexes_i $Q $Q)
-        read ENCODE_TIME DECODE_TIME < <(echo "$LOG" | grep "average encoding time" | tail -n 1 | sed -E 's/.*encoding time ([0-9]+) ms, average decoding time ([0-9]+) ms.*/\1 \2/')
-        local ENCODE_TIME=$(echo "$ENCODE_TIME * $FRAMES" | bc)
-        local DECODE_TIME=$(echo "$DECODE_TIME * $FRAMES" | bc)
+        local LOG=$(conda run -n dcvc python test_video.py --model_path_i ./checkpoints/cvpr2024_image.pth.tar --model_path_p ./checkpoints/cvpr2024_video.pth.tar --rate_num 2 --test_config ./dataset.json --cuda 1 --worker 1 --output_path output.json --force_intra_period 9999 --write_stream 1 --save_decoded_frame 1 --stream_path output --verbose 2 --q_indexes_i $Q $Q 2>&1)
+        local ENCODE_TIME=$(echo "$LOG" | grep -oP 'encoded, \K[0-9.]+' | awk '{sum+=$1; n++} END {if(n>0) print sum/n}')
+        local DECODE_TIME=$(echo "$LOG" | grep -oP 'decoded, \K[0-9.]+' | awk '{sum+=$1; n++} END {if(n>0) print sum/n}')
         local AVE_ALL_FRAME_BPP=$(grep -o '"ave_all_frame_bpp":[^,]*' "output/test_q$Q.json" | cut -d: -f2)
         local PIXEL_NUM=$(grep -o '"frame_pixel_num":[^,]*' "output/test_q$Q.json" | cut -d: -f2)
         local SIZE=$(echo "$AVE_ALL_FRAME_BPP * $PIXEL_NUM * $FRAMES" | bc)
@@ -367,7 +366,7 @@ decode()
         local RES=$(cat $TEMP"/resolution.txt")
         local COUNT=$(cat $TEMP"/count.txt")
         local ID=0
-        for FILE in $DCVC/*.yuv; do 
+        for FILE in $DCVC/output/*.yuv; do 
             local NAME=$(basename "$FILE")
             local NAME="${NAME%.*}"
             $FFMPEG -y -f rawvideo -pix_fmt yuv444p -color_range pc -colorspace bt709 -color_trc bt709 -color_primaries bt709 -video_size $RES -i $FILE "$OUTPUT/$NAME.png" >&2
@@ -601,10 +600,10 @@ evaluate()
 measure()
 {
     local SCENE=$1
-    #for METHOD in jxl jpegai vvc av1 av2 dcvc dcmvc glc; do
-    for METHOD in glc; do
+    for METHOD in jxl jpegai vvc av1 av2 dcvc dcmvc glc; do
+    #for METHOD in jpegai; do
         #for QUALITY in $(seq 0.0 0.1 1.0); do
-        for QUALITY in 1.0; do
+        for QUALITY in 0.5; do
             evaluate $METHOD "$SCENE" $QUALITY
         done
     done

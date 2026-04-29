@@ -1,7 +1,7 @@
 #/bin/bash
 # The parameters are two directories containing views either as one animation/video file or as separate view files named as 0001.png, 0002.png...
-DISTORTED=$1
-REFERENCE=$2
+REFERENCE=$1
+DISTORTED=$2
 
 set -xe
 
@@ -50,15 +50,15 @@ mkdir -p $DISTORTED_FRAMES
 $FFMPEG -i $DISTORTED_PATTERN -fps_mode passthrough -pix_fmt rgb24 "$DISTORTED_FRAMES/%04d.png"
 FRAMES_COUNT=$(ls -1q $REFERENCE_FRAMES | wc -l)
 
-for I in $(seq 1 $(($FRAMES_COUNT))); do
+for I in $(seq 1 $(($DISTORTED_COUNT))); do
     FILE=$(printf "%04d.png" "$I")
     CURRENT_FSIM=$($ISM --org_img_path=$REFERENCE_FRAMES/$FILE --pred_img_path=$DISTORTED_FRAMES/$FILE --metric fsim | tail -n 1 | jq -r '.metrics.fsim')
     FSIM=$(echo "scale=5; $FSIM + $CURRENT_FSIM" | bc)
     NOREF=$(python noRef.py $DISTORTED_FRAMES/$FILE)
-    read LIQE QUALICLIP ARNIQA <<< $(echo "$NOREF" | tail -n 1)
-    LIQE=$(echo "scale=5; $LIQE + $LIQE" | bc)
-    QUALICLIP=$(echo "scale=5; $QUALICLIP + $QUALICLIP" | bc)
-    ARNIQA=$(echo "scale=5; $ARNIQA + $ARNIQA" | bc)
+    read CUR_LIQE CUR_QUALICLIP CUR_ARNIQA <<< $(echo "$NOREF" | tail -n 1)
+    LIQE=$(echo "scale=5; $LIQE + $CUR_LIQE" | bc)
+    QUALICLIP=$(echo "scale=5; $QUALICLIP + $CUR_QUALICLIP" | bc)
+    ARNIQA=$(echo "scale=5; $ARNIQA + $CUR_ARNIQA" | bc)
 done
 FSIM=$(echo "scale=5; $FSIM / $DISTORTED_COUNT" | bc)
 LIQE=$(echo "scale=5; $LIQE / $DISTORTED_COUNT" | bc)
