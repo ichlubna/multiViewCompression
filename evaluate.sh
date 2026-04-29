@@ -565,8 +565,8 @@ evaluate()
     local INTERPOLATED_HALF_BIMVFI="$TEMP/interpolatedHalfBIMVFI"
     local INTERPOLATED_FULL_BIMVFI="$TEMP/interpolatedFullBIMVFI"
     
-    #for KEY in single stereoClose stereoFar multi; do
-    for KEY in single; do
+    for KEY in single stereoClose stereoFar multi; do
+    #for KEY in multi; do
         clearDirs "$ENCODED" "$DECODED" "$REFERENCE"
         eval "CURRENT_FILES=(${REF_FILES[$KEY]})"
         I=1
@@ -601,9 +601,9 @@ measure()
 {
     local SCENE=$1
     for METHOD in jxl jpegai vvc av1 av2 dcvc dcmvc glc; do
-    #for METHOD in jpegai; do
-        #for QUALITY in $(seq 0.0 0.1 1.0); do
-        for QUALITY in 0.5; do
+    #for METHOD in jxl; do
+        for QUALITY in $(seq 0.0 0.1 1.0); do
+        #for QUALITY in 0.5; do
             evaluate $METHOD "$SCENE" $QUALITY
         done
     done
