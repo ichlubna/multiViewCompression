@@ -506,8 +506,8 @@ interpolate()
             local TOTAL_TIME=$(echo "scale=5; $TOTAL_TIME + $TIME" | bc)
             local INTERPOLATED_COUNT=$(($INTERPOLATED_COUNT + 1))
 
-            local NEW_PAIRS+=("$FIRST $INTERPOLATED_DIR_FULL/$NEW")
-            local NEW_PAIRS+=("$INTERPOLATED_DIR_FULL/$NEW $SECOND")
+            local NEW_PAIRS+=("$FIRST $NEW")
+            local NEW_PAIRS+=("$NEW $SECOND")
             local FINISHED=$(($FINISHED + 1))
         done
         local PAIRS=("${NEW_PAIRS[@]}")
