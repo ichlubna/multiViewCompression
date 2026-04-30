@@ -5,7 +5,7 @@ cursor=0
 count=0
 
 # A number of API requests, cca number of quilts to be downloaded
-MAX_QUILTS=20
+MAX_QUILTS=100
 
 ssim_all() {
     #ffmpeg -y -i "$1" -i "$2" -lavfi ssim -f null - 2>&1 \
@@ -17,7 +17,6 @@ ssim_all() {
 
 rm urls.txt
 rm list.txt
-rm -rf tmp
 
 # Gather URLs using API
 while true; do
@@ -63,10 +62,8 @@ done
 grep -oP '"url":"\Khttps://s3[^"]+qs[0-9]+x[0-9]+a[^"]+\.png' urls.txt | grep -v 'source\.png$' \
     | sort -u > list.txt
 
-mkdir tmp/
-cd tmp/
-wget -i ../list.txt
-cd ..
+TEMP=$(mktemp -d)
+wget -i list.txt -P $TEMP
 
 #fi
 
@@ -77,7 +74,7 @@ COUNTER=1
 
 files=()
 
-for file in tmp/*; do
+for file in $TEMP/*; do
     echo "${COUNTER}. Processing ${file}"
     mkdir -p "results/${COUNTER}"
     if [[ $file =~ qs([0-9]+)x([0-9]+)a ]]; then
@@ -141,3 +138,4 @@ for file in tmp/*; do
     fi
     COUNTER=$((COUNTER+1))
 done
+rm -rf $TEMP

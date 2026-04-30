@@ -68,6 +68,9 @@ echo $HEADER >> ${LOG['multiInterpolatedHalf']}
 >${LOG['multiInterpolatedFull']}
 echo $HEADER >> ${LOG['multiInterpolatedFull']}
 
+TIME_LOG="$OUTPUT_DIR/totalTime.csv"
+echo "scene, totalTime" >$TIME_LOG
+
 SCENES=($(ls "$INPUT_DIR" | sort))
 TEMP=$(mktemp -d)
 
@@ -566,7 +569,7 @@ evaluate()
     local INTERPOLATED_FULL_BIMVFI="$TEMP/interpolatedFullBIMVFI"
     
     for KEY in single stereoClose stereoFar multi; do
-    #for KEY in multi; do
+    #for KEY in stereoFar; do
         clearDirs "$ENCODED" "$DECODED" "$REFERENCE"
         eval "CURRENT_FILES=(${REF_FILES[$KEY]})"
         I=1
@@ -610,7 +613,10 @@ measure()
 }
 
 for SCENE in $SCENES; do
+    START_TIME=$SECONDS
     measure "$INPUT_DIR/$SCENE"
+    ELAPSED_TIME=$(($SECONDS - $START_TIME))
+    echo "$SCENE, $ELAPSED_TIME" >> $TIME_LOG
 done
 
 rm -rf $TEMP
