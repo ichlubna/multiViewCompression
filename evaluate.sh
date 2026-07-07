@@ -44,6 +44,8 @@ GLC=GLC
 
 set -ex
 
+INTERPOLATE_METHOD="none"
+
 if [ $# -ne 2 ]; then
     echo "Usage: $0 <input_dir> <output_dir>"
     exit 1
@@ -175,13 +177,15 @@ encode()
             local BPP_ORIG=$(awk "BEGIN {print $BITS / ($WIDTH * $HEIGHT)}")
             #local Q=$(echo "scale=5; e(l(2) * -6 * (1 - $QUALITY))" | bc -l)
             local Q=$(echo "scale=5;
-              raw = e(l(2) * -6 * (1 - $QUALITY));
+              raw = e(l(2) * -6 * (1 - $QUALITY)^2);
               min = e(l(2) * -6 * 1);
               max = e(l(2) * -6 * 0);
               (raw - min) / (max - min)
             " | bc -l)
+            #local Q=$(echo "scale=5; 1-$QUALITY" | bc -l)
+            local Q=$(echo "scale=10; 0.5*(s((1.57*$QUALITY - 0.78)/1/c(1))) + 0.5" | bc -l)
             local BPP_TARGET=$(codecQuality $Q $BPP_ORIG)
-            local BPP_TARGET=$(awk "BEGIN {printf \"%d\",1+$BPP_TARGET*100*0.5}")
+            local BPP_TARGET=$(awk "BEGIN {printf \"%d\",1+$BPP_TARGET*100*0.3}")
             docker run --rm --mount src=.,target=/root/vm_init,type=bind diveraak/jpeg_ai:latest bash -c "source /root/miniconda3/etc/profile.d/conda.sh && conda activate jpeg_ai_vm && python -m src.reco.coders.encoder $INPUT_FILE $OUTPUT_FILE --set_target_bpp $BPP_TARGET" >&2
         done
         cd - > /dev/null
@@ -364,6 +368,8 @@ decode()
     elif [ $METHOD == "av2" ]; then
         local START=$(now)
         "$AVMDEC" "$INPUT/${FILES[0]}" -o "$OUTPUT/decoded.y4m" >&2
+        $FFMPEG -i "$OUTPUT/decoded.y4m" -pix_fmt rgb24 "$OUTPUT/%04d.png" >&2
+        rm "$OUTPUT/decoded.y4m"
         local END=$(now)
     elif [ $METHOD == "dcvc" ]; then
         local RES=$(cat $TEMP"/resolution.txt")
@@ -544,7 +550,7 @@ evaluate()
     local SCENE="$TEMP/scene"
     clearDirs "$SCENE"
     local PATTERN=$(filePattern "$INPUT_SCENE")
-    $FFMPEG -y -i "$PATTERN" -pix_fmt rgb24 "$SCENE/%04d.png"
+    $FFMPEG -y -i "$PATTERN" -vf "pad=width=ceil(iw/2)*2:height=ceil(ih/2)*2" -pix_fmt rgb24 "$SCENE/%04d.png"
 
     local COUNT=$(ls "$SCENE" -1 | wc -l)
     local CENTER=$(($COUNT / 2))
@@ -569,7 +575,7 @@ evaluate()
     local INTERPOLATED_FULL_BIMVFI="$TEMP/interpolatedFullBIMVFI"
     
     for KEY in single stereoClose stereoFar multi; do
-    #for KEY in stereoFar; do
+    #for KEY in single; do
         clearDirs "$ENCODED" "$DECODED" "$REFERENCE"
         eval "CURRENT_FILES=(${REF_FILES[$KEY]})"
         I=1
@@ -583,7 +589,7 @@ evaluate()
         local SIZE=$(size "$ENCODED")
         local METRICS=$(quality "$REFERENCE" "$DECODED")
         echo $SCENE_NAME, $QUALITY, $METHOD, $METRICS, $ENCODE_TIME, $DECODE_TIME, $SIZE  >> ${LOG["$KEY"]} 
-        if [ $KEY == "multi" ]; then
+        if [ $KEY == "multi" ] && [ $METHOD == $INTERPOLATE_METHOD ]; then
             local INTERPOLATION_TIME=$(interpolate "$DECODED" "$INTERPOLATED_HALF_EDEN" "$INTERPOLATED_FULL_EDEN" "eden")
             local METRICS=$(quality "$REFERENCE" "$INTERPOLATED_HALF_EDEN")
             local SIZE_HALF=$(echo "scale=2; $SIZE * 0.5" | bc) 
@@ -604,7 +610,8 @@ measure()
 {
     local SCENE=$1
     for METHOD in jxl jpegai vvc av1 av2 dcvc dcmvc glc; do
-    #for METHOD in jxl; do
+    #for METHOD in vvc dcmvc glc; do
+    #for METHOD in av2; do
         for QUALITY in $(seq 0.0 0.1 1.0); do
         #for QUALITY in 0.5; do
             evaluate $METHOD "$SCENE" $QUALITY
@@ -612,7 +619,7 @@ measure()
     done
 }
 
-for SCENE in $SCENES; do
+for SCENE in "${SCENES[@]}"; do
     START_TIME=$SECONDS
     measure "$INPUT_DIR/$SCENE"
     ELAPSED_TIME=$(($SECONDS - $START_TIME))

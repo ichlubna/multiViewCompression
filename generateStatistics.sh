@@ -1,6 +1,6 @@
 #!/bin/bash
 
-DIR="results"
+DIR=$1
 
 # Check if the directory exists
 if [ ! -d "$DIR" ]; then
