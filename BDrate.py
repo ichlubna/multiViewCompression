@@ -56,5 +56,3 @@ for codecA in codecs:
             print(result+" &")
         result = ""
     print("")
-
-
